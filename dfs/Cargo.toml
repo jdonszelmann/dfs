@@ -1,0 +1,21 @@
+[package]
+name = "dfs"
+version = "0.1.0"
+edition = "2018"
+
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+libp2p = "0.39.1"
+log = "0.4.14"
+rusqlite = "0.25.3"
+thiserror = "1.0.29"
+serde = {version = "1.0.130", derive = true}
+tokio = {version="1.12.0", default-features=false, features=["fs", "sync", "rt", "macros", "time"]}
+
+[dev-dependencies]
+temp_testdir = "0.2"
+env_logger = "0.9.0"
+tokio = {version="1.12.0", default-features=false, features=["fs", "sync", "rt-multi-thread", "macros", "time"]}
+
