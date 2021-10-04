@@ -114,6 +114,26 @@ pub(crate) fn connect_db(db_path: Option<PathBuf>) -> Result<Connection, NewDfsE
          )", [],
     )?;
 
+    conn.execute("
+         create table if not exists peers (
+            id integer primary key unique,
+
+            name text not null unique,
+            last_known_ip text,
+
+            public_key text not null,
+            private_key text not null
+         )", [],
+    )?;
+
+    conn.execute("
+         create table if not exists peers_roots_join (
+            id integer primary key unique,
+            root_id integer,
+            peer_id integer
+         )", [],
+    )?;
+
     Ok(conn)
 }
 

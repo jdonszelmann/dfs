@@ -7,11 +7,10 @@ use tokio::sync::mpsc::{channel, unbounded_channel, Sender, UnboundedSender, Rec
 use tokio::sync::oneshot::{channel as oneshot_channel, Sender as OneshotSender};
 use std::sync::atomic::{AtomicUsize, Ordering, AtomicBool};
 use tokio::select;
-use tokio::task::{JoinHandle, spawn};
+use tokio::task::spawn;
 use thiserror::Error;
 use tokio::fs::DirEntry;
 use rusqlite::params;
-use tokio::time::{Duration, timeout};
 
 #[derive(Debug, Error)]
 #[error("couldn't index at {path}: {error}")]
@@ -80,7 +79,7 @@ impl Inner {
                 if let Err(err) = self.fatal_errors_tx.send(IndexError::GetId).await {
                     log::error!("couldn't send fatal error msg {}", err);
                 }
-                return 0;
+                0
             }
         }
     }
@@ -209,10 +208,8 @@ impl<'dfs, 'root> Indexer<'dfs, 'root> {
                     log::error!("failed to send task done message: {}", err);
                 };
             });
-        } else {
-            if let Err(_) = no_next_task.send(()) {
-                log::error!("couldn't send no next task msg")
-            }
+        } else if no_next_task.send(()).is_err() {
+            log::error!("couldn't send no next task msg")
         }
     }
 

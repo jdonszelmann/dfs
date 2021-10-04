@@ -10,7 +10,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         let mut data_dir: PathBuf = std::env::var("XDG_DATA_HOME")
-            .unwrap_or("~/.local/share".into())
+            .unwrap_or_else(|_| "~/.local/share".into())
             .into();
 
         data_dir.push("dfs");
@@ -25,8 +25,9 @@ impl Default for Config {
 impl Config {
     /// For use in tests. Makes paths in-memory and more.
     pub fn test_config() -> Self {
-        let mut d = Config::default();
-        d.global_db = None;
-        d
+        Config {
+            global_db: None,
+            ..Default::default()
+        }
     }
 }

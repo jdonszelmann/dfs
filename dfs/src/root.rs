@@ -193,8 +193,7 @@ impl<'dfs> ConnectedRoot<'dfs> {
 
 
 pub(crate) fn connect_db(db_path: Option<PathBuf>) -> Result<Connection, DbConnectionError>{
-    let conn = if let Some(db_path) = db_path {
-        let mut db_path = db_path.clone();
+    let conn = if let Some(mut db_path) = db_path {
         db_path.push("dfs.db");
         Connection::open(db_path)?
     } else {
@@ -290,7 +289,7 @@ mod tests {
 
         let mut connected_a = root_a.connect().unwrap();
 
-        connected_a.index().await.unwrap()
+        connected_a.index().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
