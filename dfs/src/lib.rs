@@ -7,6 +7,5 @@ pub mod dfs_struct;
 pub mod peer;
 pub mod global_store;
 
-#[cfg(test)]
-mod test;
+pub mod test;
 

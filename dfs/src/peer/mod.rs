@@ -8,7 +8,7 @@ pub struct Peer {
 }
 
 impl Peer {
-    pub(crate) fn new(name: String) -> Self {
+    pub fn new(name: String) -> Self {
         let uuid = Uuid::new_v4();
         Self {
             uuid,

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use serde::{Serialize, Deserialize};
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 pub struct Config {
     pub local_db: PathBuf,
     pub global_db: PathBuf,
@@ -22,7 +22,6 @@ impl Default for Config {
     }
 }
 
-#[cfg(test)]
 pub mod test {
     use temp_testdir::TempDir;
     use crate::config::Config;

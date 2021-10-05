@@ -6,6 +6,8 @@ use crate::global_store::PutStatus;
 use crate::root::dir_entry::StorableDirEntry;
 
 pub mod heed_store;
+pub mod sled_store;
+pub mod sqlite;
 
 pub trait LocalStore: Sized + 'static {
     type Error;

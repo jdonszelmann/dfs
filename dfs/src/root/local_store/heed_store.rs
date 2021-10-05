@@ -19,6 +19,7 @@ impl LocalStore for Heed {
     fn new(path: &Path) -> Result<Self, Self::Error> {
         let env = EnvOpenOptions::new()
             .max_dbs(3)
+            .map_size(2 * 1024 * 1024 * 1024)
             .open(path)?;
 
 
@@ -31,9 +32,9 @@ impl LocalStore for Heed {
     fn put_direntry(&self, id: Uuid, dir: &StorableDirEntry, overwrite: bool) -> Result<PutStatus, Self::Error> {
         let mut txn = self.env.write_txn()?;
 
-        if !overwrite && (self.direntries.get(&txn, &id)?.is_some()) {
-            return Ok(PutStatus::Exists)
-        }
+        // if !overwrite && (self.direntries.get(&txn, &id)?.is_some()) {
+        //     return Ok(PutStatus::Exists)
+        // }
 
         self.direntries.put(&mut txn, &id, dir)?;
 

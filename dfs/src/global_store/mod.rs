@@ -28,12 +28,14 @@ impl PutStatus {
     }
 }
 
+/// The GlobalStore is a store used by a DFS. All Roots in this DFS share this store.
+/// The GlobalStore stores information about peers and roots.
+///
+/// TODO: GlobalStore systemwide or per-user?
+/// TODO: Do we allow overlapping roots (maybe from different users)
 pub trait GlobalStore: Sized + Sync {
     type Error;
 
-    /// Creat a new database connection.
-    ///
-    /// If path is None, returns an in-memory database
     fn new(path: &Path) -> Result<Self, Self::Error>;
 
     fn put_peer(&self, id: Uuid, peer: &Peer, overwrite: bool) -> Result<PutStatus, Self::Error>;

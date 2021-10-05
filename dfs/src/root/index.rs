@@ -25,7 +25,7 @@ pub struct NonFatalIndexError {
 #[derive(Debug, Error)]
 pub enum IndexError<LSE> {
     #[error("db error: {0}")]
-    Sqlite(#[from] LSE),
+    DbInteractionError(#[from] LSE),
 
     #[error("failed to get root dir entry: {0}")]
     GetRootDir(#[from] GetRootEntryError<LSE>),
@@ -146,7 +146,7 @@ struct DbMessage {
     parent_id: Uuid,
 }
 
-pub struct Indexer<'dfs, 'root, GS, LS: LocalStore> {
+pub(crate) struct Indexer<'dfs, 'root, GS, LS: LocalStore> {
     inner: Arc<Inner>,
 
     // Option cause we will move it out of the struct and need to replace it with something.
@@ -244,7 +244,7 @@ impl<'dfs, 'root, GS: GlobalStore, LS: LocalStore> Indexer<'dfs, 'root, GS, LS> 
         Ok(())
     }
 
-    pub async fn index(mut self) -> Result<(), IndexError<LS::Error>> {
+    pub(crate) async fn index(mut self) -> Result<(), IndexError<LS::Error>> {
         // unwrap safe because we can only call index once
         let mut fatal_error = self.fatal_errors_rx.take().unwrap();
         // unwrap safe because we can only call index once

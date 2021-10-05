@@ -8,6 +8,7 @@ use crate::global_store::{GlobalStore, PutStatus};
 use crate::peer::Peer;
 use crate::root::StorableRoot;
 
+/// GlobalStore implementation using the Heed key-value store.
 pub struct Heed {
     env: Env,
     peers: Database<SerdeBincode<Uuid>, SerdeBincode<Peer>>,
@@ -18,6 +19,16 @@ pub struct Heed {
 impl GlobalStore for Heed {
     type Error = heed::Error;
 
+    /// Create a new Heed store
+    ///
+    /// ```
+    /// # use temp_testdir::TempDir;
+    /// # use dfs::global_store::heed_store::Heed;
+    /// use dfs::global_store::GlobalStore;
+    ///
+    /// let tempdir = TempDir::new("test", true);
+    /// assert!(Heed::new(&tempdir).is_ok());
+    /// ```
     fn new(path: &Path) -> Result<Self, Self::Error> {
         let env = EnvOpenOptions::new()
             .max_dbs(3)
@@ -32,6 +43,42 @@ impl GlobalStore for Heed {
         })
     }
 
+    /// Create a new Heed store
+    ///
+    /// ```
+    /// # use temp_testdir::TempDir;
+    /// # use dfs::global_store::heed_store::Heed;
+    /// # use dfs::peer::Peer;
+    /// use dfs::global_store::GlobalStore;
+    ///
+    /// let tempdir = TempDir::new("test", true);
+    /// let store = Heed::new(&tempdir).unwrap();
+    ///
+    /// let peer = Peer::new("jonathan".to_string());
+    ///
+    /// assert!(store.put_peer(peer.id(), &peer, false).is_ok());
+    /// ```
+    ///
+    /// If the overwrite variable is true, [`PutStatus`] can only ever be Ok.
+    /// If overwrite is false, the function is not allowed to overwrite existing entries which already
+    /// have the same uuid as the current peer. In that case, [`PutStatus`] is [`Exists`]
+    ///
+    /// ```
+    /// # use temp_testdir::TempDir;
+    /// # use dfs::global_store::heed_store::Heed;
+    /// # use dfs::global_store::GlobalStore;
+    /// # use dfs::peer::Peer;
+    /// use dfs::global_store::PutStatus;
+    ///
+    /// # let tempdir = TempDir::new("test", true);
+    /// # let store = Heed::new(&tempdir).unwrap();
+    ///
+    /// let peer = Peer::new("jonathan".to_string());
+    /// assert_eq!(store.put_peer(peer.id(), &peer, false).unwrap(), PutStatus::Ok);
+    /// assert_eq!(store.put_peer(peer.id(), &peer, false).unwrap(), PutStatus::Exists);
+    /// assert_eq!(store.put_peer(peer.id(), &peer, true).unwrap(), PutStatus::Ok);
+    /// ```
+    ///
     fn put_peer(&self, id: Uuid, peer: &Peer, overwrite: bool) -> Result<PutStatus, Self::Error> {
 
         let mut txn = self.env.write_txn()?;
