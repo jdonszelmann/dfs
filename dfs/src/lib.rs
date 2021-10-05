@@ -1,14 +1,12 @@
+pub use dfs_struct::*;
 
-pub mod dir_entry;
 pub mod root;
 pub mod config;
-pub mod index;
 
 pub mod dfs_struct;
+pub mod peer;
+pub mod global_store;
 
 #[cfg(test)]
 mod test;
-
-pub use dfs_struct::*;
-
 

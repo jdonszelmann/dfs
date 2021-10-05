@@ -3,8 +3,8 @@ use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
-    pub local_db: Option<PathBuf>,
-    pub global_db: Option<PathBuf>,
+    pub local_db: PathBuf,
+    pub global_db: PathBuf,
 }
 
 impl Default for Config {
@@ -16,18 +16,24 @@ impl Default for Config {
         data_dir.push("dfs");
 
         Self {
-            local_db: Some(".dfs".into()),
-            global_db: Some(data_dir,)
+            local_db: ".dfs".into(),
+            global_db: data_dir
         }
     }
 }
 
-impl Config {
-    /// For use in tests. Makes paths in-memory and more.
-    pub fn test_config() -> Self {
-        Config {
-            global_db: None,
-            ..Default::default()
+#[cfg(test)]
+pub mod test {
+    use temp_testdir::TempDir;
+    use crate::config::Config;
+
+    impl Config {
+        /// For use in tests. Makes paths in-memory and more.
+        pub fn test_config(dir: &TempDir) -> Self {
+            Config {
+                global_db: dir.to_path_buf(),
+                ..Default::default()
+            }
         }
     }
 }

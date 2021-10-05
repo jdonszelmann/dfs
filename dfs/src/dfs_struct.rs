@@ -1,33 +1,39 @@
-use crate::config::Config;
-use crate::root::{Root, RootPathDoesntExistError};
-use rusqlite::{Connection, params};
-use std::path::{Path, PathBuf};
-use thiserror::Error;
 use std::io;
-use crate::root;
+use std::path::{Path, PathBuf};
+
+use thiserror::Error;
+
+use crate::config::Config;
+use crate::global_store::GlobalStore;
+use crate::global_store::heed_store::Heed;
+use crate::peer::Peer;
+use crate::root::Root;
 
 #[derive(Debug, Error)]
-pub enum NewDfsError {
-    #[error("sqlite connection error: {0}")]
-    Sqlite(#[from] rusqlite::Error)
+pub enum NewDfsError<GSE> {
+    #[error("db error: {0}")]
+    DbInteractionError(#[from] GSE)
 }
 
 #[derive(Debug, Error)]
-pub enum GetRootError {
+pub enum NewPeerError<GSE> {
+    #[error("db error: {0}")]
+    Sqlite(#[from] GSE),
+
+    #[error("peer with this name already exists")]
+    PeerExists
+}
+
+#[derive(Debug, Error)]
+pub enum GetRootError <GSE> {
     #[error("failed to compile or run sql statement: {0}")]
-    CompileStatement(#[from] rusqlite::Error),
-
-    #[error("found that root was removed from disk backing while getting root struct from database: {:?}", (.0).0)]
-    RemovedFromDisk(#[from] RootPathDoesntExistError),
+    CompileStatement(#[from] GSE),
 }
 
 #[derive(Debug, Error)]
-pub enum NewRootError {
-    #[error("failed to compile sql statement: {0}")]
-    CompileStatement(#[from] rusqlite::Error),
-
+pub enum NewRootError<GSE> {
     #[error("db interaction error: {0}")]
-    DbInteractionError(#[from] GetRootError),
+    DbInteractionError(GSE),
 
     #[error("failed to canonicalize path: {0}")]
     CanonicalizePath(#[from] io::Error),
@@ -35,20 +41,29 @@ pub enum NewRootError {
     #[error("path wasn't properly encoded utf8")]
     Utf8,
 
-    #[error("path for new root at {:?} doesn't point to an existing folder (please make it first)", (.0).0)]
-    PathDoesntExist(#[from] root::RootPathDoesntExistError)
+    #[error("path for new root at {0:?} doesn't point to an existing folder (please make it first)")]
+    PathDoesntExist(PathBuf),
+
+    #[error("root with this name already exists")]
+    RootExists
 }
 
 
-pub struct Dfs {
+pub struct Dfs<GS = Heed>{
     cfg: Config,
-    connection: Connection
+    pub(crate) connection: GS,
 }
 
-impl Dfs {
-    pub fn new(cfg: Config) -> Result<Self, NewDfsError> {
+impl Dfs<Heed> {
+    pub fn new(cfg: Config) -> Result<Self, NewDfsError<<Heed as GlobalStore>::Error>> {
+        Self::new_internal(cfg)
+    }
+}
+
+impl<GS: GlobalStore> Dfs<GS> {
+    fn new_internal(cfg: Config) -> Result<Self, NewDfsError<GS::Error>> {
         Ok(Self {
-            connection: connect_db(cfg.global_db.clone())?,
+            connection: GS::new(&cfg.global_db)?,
             cfg,
         })
     }
@@ -57,89 +72,53 @@ impl Dfs {
         &self.cfg
     }
 
-    pub fn new_root(&self, path: impl AsRef<Path>, name: impl AsRef<str>) -> Result<Root, NewRootError> {
+    pub fn new_peer(&self, name: String) -> Result<Peer, NewPeerError<GS::Error>> {
+        let peer = Peer::new(name);
+        self.connection.put_peer(peer.id(), &peer, false)?;
+
+        Ok(peer)
+    }
+
+    pub fn new_root(&mut self, path: impl AsRef<Path>, name: impl AsRef<str>) -> Result<Root<GS>, NewRootError<GS::Error>> {
+
         let path = path.as_ref().to_path_buf().canonicalize()?;
 
-        let root = Root::new(self, path.clone(), name.as_ref().to_string())?;
+        if !path.exists() {
+            return Err(NewRootError::PathDoesntExist(path))
+        }
 
-        self.connection.execute(
-            "INSERT INTO roots (path, name) VALUES (?1, ?2)",
-            params![path.to_str().ok_or(NewRootError::Utf8)?, name.as_ref()],
-        )?;
+        let root = Root::new(self, name.as_ref().to_string(), path);
+
+        self.connection.put_root(root.id(), &root, false)
+            .map_err(NewRootError::DbInteractionError)?
+            .to_err(|| NewRootError::RootExists)?;
 
         Ok(root)
     }
 
-    pub fn get_root(&self, name: impl AsRef<str>) -> Result<Root, GetRootError> {
-
-        let root = self.connection.query_row(
-            "select path, name from roots where name = ?1;",
-            [name.as_ref()],
-            |row| {
-                let path: String = row.get(0)?;
-                Ok(Root::new(self, path.into(), row.get(1)?))
-            }
-        )?;
-
-        Ok(root?)
+    pub fn get_root(&self, name: impl AsRef<str>) -> Result<Option<Root<GS>>, GetRootError<GS::Error>> {
+         Ok(
+             self.connection.get_root_by_name(name.as_ref())?
+             .map(|r| {
+                 Root::from_storable(self, r)
+             })
+         )
     }
 
-    pub fn get_roots(&self) -> Result<Vec<Root>, GetRootError> {
-        let mut res = self.connection.prepare("
-            select path, name from roots;
-        ")?;
-
-        let roots = res.query_map([], |row| {
-            let path: String = row.get(0)?;
-            Ok(Root::new(self, path.into(), row.get(1)?))
-        })?;
-
-        Ok(roots.flatten().collect::<Result<_, _>>()?)
+    pub fn get_roots(&self) -> Result<Vec<Root<GS>>, GetRootError<GS::Error>> {
+        Ok(
+            self.connection.get_all_roots()?
+                .into_iter()
+                .map(|s| Root::from_storable(self, s))
+                .collect()
+        )
     }
-}
-
-pub(crate) fn connect_db(db_path: Option<PathBuf>) -> Result<Connection, NewDfsError>{
-    let conn = if let Some(mut db_path) = db_path {
-        db_path.push("dfs.db");
-        Connection::open(db_path)?
-    } else {
-        Connection::open_in_memory()?
-    };
-
-    conn.execute("
-         create table if not exists roots (
-            id integer primary key unique,
-            path text not null unique,
-            name text not null unique
-         )", [],
-    )?;
-
-    conn.execute("
-         create table if not exists peers (
-            id integer primary key unique,
-
-            name text not null unique,
-            last_known_ip text,
-
-            public_key text not null,
-            private_key text not null
-         )", [],
-    )?;
-
-    conn.execute("
-         create table if not exists peers_roots_join (
-            id integer primary key unique,
-            root_id integer,
-            peer_id integer
-         )", [],
-    )?;
-
-    Ok(conn)
 }
 
 #[cfg(test)]
 mod tests {
     use temp_testdir::TempDir;
+
     use crate::config::Config;
     use crate::Dfs;
 
@@ -149,10 +128,10 @@ mod tests {
         let global = TempDir::new("global", true);
 
         let mut cfg = Config::default();
-        cfg.global_db = Some(global.as_ref().to_path_buf());
+        cfg.global_db = global.as_ref().to_path_buf();
 
         {
-            let dfs = Dfs::new(cfg.clone()).unwrap();
+            let mut dfs = Dfs::new(cfg.clone()).unwrap();
 
             let _root_a = dfs.new_root(&root_a_dir, "a").unwrap();
             assert!(dfs.new_root(root_a_dir, "a").is_err());
@@ -166,10 +145,10 @@ mod tests {
         let global = TempDir::new("global", true);
 
         let mut cfg = Config::default();
-        cfg.global_db = Some(global.as_ref().to_path_buf());
+        cfg.global_db = global.as_ref().to_path_buf();
 
         {
-            let dfs = Dfs::new(cfg.clone()).unwrap();
+            let mut dfs = Dfs::new(cfg.clone()).unwrap();
 
             let _root_b = dfs.new_root(&root_a_dir, "a").unwrap();
             assert!(dfs.new_root(root_b_dir, "a").is_err());
@@ -183,10 +162,10 @@ mod tests {
         let global = TempDir::new("global", true);
 
         let mut cfg = Config::default();
-        cfg.global_db = Some(global.as_ref().to_path_buf());
+        cfg.global_db = global.as_ref().to_path_buf();
 
         {
-            let dfs = Dfs::new(cfg.clone()).unwrap();
+            let mut dfs = Dfs::new(cfg.clone()).unwrap();
 
             let _root_a = dfs.new_root(&root_a_dir, "a").unwrap();
             let _root_b = dfs.new_root(&root_b_dir, "b").unwrap();
@@ -200,13 +179,13 @@ mod tests {
         let global = TempDir::new("global", true);
 
         let mut cfg = Config::default();
-        cfg.global_db = Some(global.as_ref().to_path_buf());
+        cfg.global_db = global.as_ref().to_path_buf();
 
         {
-            let dfs = Dfs::new(cfg.clone()).unwrap();
+            let mut dfs = Dfs::new(cfg.clone()).unwrap();
 
 
-            assert!(dfs.get_root("a").is_err());
+            assert!(dfs.get_root("a").unwrap().is_none());
 
             let _root_a = dfs.new_root(&root_a_dir, "a").unwrap();
             let _root_b = dfs.new_root(&root_b_dir, "b").unwrap();

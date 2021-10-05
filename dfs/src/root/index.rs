@@ -9,8 +9,11 @@ use std::sync::atomic::{AtomicUsize, Ordering, AtomicBool};
 use tokio::select;
 use tokio::task::spawn;
 use thiserror::Error;
-use tokio::fs::DirEntry;
-use rusqlite::params;
+use crate::root::dir_entry::DirEntry;
+use crate::global_store::GlobalStore;
+use crate::root::local_store::LocalStore;
+use std::ops::Deref;
+use uuid::Uuid;
 
 #[derive(Debug, Error)]
 #[error("couldn't index at {path}: {error}")]
@@ -20,16 +23,25 @@ pub struct NonFatalIndexError {
 }
 
 #[derive(Debug, Error)]
-pub enum IndexError {
-    #[error("sqlite connection error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
+pub enum IndexError<LSE> {
+    #[error("db error: {0}")]
+    Sqlite(#[from] LSE),
 
     #[error("failed to get root dir entry: {0}")]
-    GetRootDir(#[from] GetRootEntryError),
+    GetRootDir(#[from] GetRootEntryError<LSE>),
 
     #[error("path wasn't properly encoded utf8")]
     Utf8,
 
+    #[error("direntry with uuid already exists")]
+    Exists,
+
+    #[error(transparent)]
+    FatalError(FatalError)
+}
+
+#[derive(Debug, Error)]
+pub enum FatalError {
     #[error("couldn't return valid id as channel went offline")]
     GetId,
 }
@@ -38,12 +50,12 @@ pub enum IndexError {
 #[derive(Debug, Clone)]
 pub struct Task {
     path: PathBuf,
-    parent_id: i64,
+    parent_id: Uuid,
 }
 
 pub struct Inner {
     errors: Mutex<Vec<NonFatalIndexError>>,
-    fatal_errors_tx: Sender<IndexError>,
+    fatal_errors_tx: Sender<FatalError>,
     db_tx: Sender<DbMessage>,
     todo_queue_tx: UnboundedSender<Task>,
 
@@ -51,12 +63,12 @@ pub struct Inner {
     done: AtomicUsize,
     queued: AtomicUsize,
     spawned: AtomicUsize,
-    root_id: i64,
+    root_id: Uuid,
     pub task_done_tx: Sender<()>,
 }
 
 impl Inner {
-    async fn index_direntry(&self, entry: DirEntry, parent_id: i64) -> i64 {
+    async fn index_direntry(&self, entry: fs::DirEntry, parent_id: Uuid) -> Uuid {
         let (resp_tx, resp_rx) = oneshot_channel();
 
         let path = entry.path();
@@ -76,10 +88,10 @@ impl Inner {
             },
             Err(_) => {
                 // resp_tx is dropped, just return 0 and raise a fatal error
-                if let Err(err) = self.fatal_errors_tx.send(IndexError::GetId).await {
+                if let Err(err) = self.fatal_errors_tx.send(FatalError::GetId).await {
                     log::error!("couldn't send fatal error msg {}", err);
                 }
-                0
+                panic!()
             }
         }
     }
@@ -129,16 +141,16 @@ impl Inner {
 
 #[derive(Debug)]
 struct DbMessage {
-    resp: OneshotSender<i64>,
-    entry: DirEntry,
-    parent_id: i64,
+    resp: OneshotSender<Uuid>,
+    entry: fs::DirEntry,
+    parent_id: Uuid,
 }
 
-pub struct Indexer<'dfs, 'root> {
+pub struct Indexer<'dfs, 'root, GS, LS: LocalStore> {
     inner: Arc<Inner>,
 
     // Option cause we will move it out of the struct and need to replace it with something.
-    fatal_errors_rx: Option<Receiver<IndexError>>,
+    fatal_errors_rx: Option<Receiver<FatalError>>,
     // Option cause we will move it out of the struct and need to replace it with something.
     task_done_rx: Option<Receiver<()>>,
     // Option cause we will move it out of the struct and need to replace it with something.
@@ -150,11 +162,11 @@ pub struct Indexer<'dfs, 'root> {
 
     // There will never actually be contention over this mutex
     // because it will never be accessed concurrently.
-    root: Mutex<&'root mut ConnectedRoot<'dfs>>
+    root: &'root ConnectedRoot<'dfs, GS, LS>
 }
 
-impl<'dfs, 'root> Indexer<'dfs, 'root> {
-    pub(crate) fn new(root: &'root mut ConnectedRoot<'dfs>) -> Result<Self, IndexError> {
+impl<'dfs, 'root, GS: GlobalStore, LS: LocalStore> Indexer<'dfs, 'root, GS, LS> {
+    pub(crate) fn new(root: &'root ConnectedRoot<'dfs, GS, LS>) -> Result<Self, IndexError<LS::Error>> {
         let errors = Vec::new();
         let (fatal_errors_tx, fatal_errors_rx) = channel(1);
         let (todo_queue_tx, todo_queue_rx) = unbounded_channel();
@@ -188,7 +200,7 @@ impl<'dfs, 'root> Indexer<'dfs, 'root> {
             task_done_rx: Some(task_done_rx),
             db_rx: Some(db_rx),
             todo_queue_rx: Mutex::new(todo_queue_rx),
-            root: Mutex::new(root),
+            root,
         })
     }
 
@@ -213,29 +225,26 @@ impl<'dfs, 'root> Indexer<'dfs, 'root> {
         }
     }
 
-    async fn handle_db_message(&self, msg: DbMessage) -> Result<(), IndexError> {
-        let mut root = self.root.lock().await;
-        let tx = root.connection.transaction()?;
-        tx.execute(
-            "INSERT into files (name, parent, dir) VALUES (?1, ?2, ?3)",
-            params![
-                msg.entry.file_name().to_str().ok_or(IndexError::Utf8)?,
-                msg.parent_id,
-                msg.entry.path().to_str().ok_or(IndexError::Utf8)?,
-            ]
-        )?;
-        let id = tx.last_insert_rowid();
+    async fn handle_db_message(&self, msg: DbMessage) -> Result<(), IndexError<LS::Error>> {
 
-        tx.commit()?;
+        let entry = DirEntry::new(
+            self.root,
+            Default::default(),
+            Some(msg.parent_id),
+            msg.entry.path().is_dir()
+        );
 
-        if let Err(err) = msg.resp.send(id) {
+        self.root.connection.put_direntry(entry.id(), entry.deref(), false)?
+            .to_err(|| IndexError::Exists)?;
+
+        if let Err(err) = msg.resp.send(entry.id()) {
             log::error!("couldn't send response (id={})", err)
         };
 
         Ok(())
     }
 
-    pub async fn index(mut self) -> Result<(), IndexError> {
+    pub async fn index(mut self) -> Result<(), IndexError<LS::Error>> {
         // unwrap safe because we can only call index once
         let mut fatal_error = self.fatal_errors_rx.take().unwrap();
         // unwrap safe because we can only call index once
@@ -267,7 +276,7 @@ impl<'dfs, 'root> Indexer<'dfs, 'root> {
                     }
                 }
                 err = fatal_error.recv() => if let Some(e) = err {
-                    return Err(e)
+                    return Err(IndexError::FatalError(e))
                 },
                 msg = db_rx.recv() => if let Some(msg) = msg {
                     self.handle_db_message(msg).await?;
